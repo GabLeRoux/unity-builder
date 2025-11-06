@@ -223,6 +223,7 @@ export class AWSJobStack {
 
     return {
       taskDefStackName,
+      baseStackName: this.baseStackName,
       taskDefCloudFormation,
       taskDefResources,
       baseResources,

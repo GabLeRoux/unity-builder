@@ -17,11 +17,13 @@ import { AwsClientFactory } from './aws-client-factory';
 class AWSTaskRunner {
   private static readonly encodedUnderscore = `$252F`;
 
-  private static async uploadCommandToS3(commands: string, stackName: string): Promise<string> {
-    const bucketName = CloudRunner.buildParameters.awsStackName.toLowerCase();
+  private static async uploadCommandToS3(commands: string, stackName: string, baseStackName: string): Promise<string> {
+    // Use base stack name as bucket name (created by CloudFormation)
+    const bucketName = baseStackName.toLowerCase();
     const key = `commands/${stackName}-${Date.now()}.sh`;
 
     try {
+      // Try to upload to S3
       await AwsClientFactory.getS3().send(
         new PutObjectCommand({
           Bucket: bucketName,
@@ -34,7 +36,32 @@ class AWSTaskRunner {
       const s3Url = `s3://${bucketName}/${key}`;
       CloudRunnerLogger.log(`Uploaded command script to ${s3Url}`);
       return s3Url;
-    } catch (error) {
+    } catch (error: any) {
+      // If bucket doesn't exist, it means CloudFormation hasn't created it yet
+      if (error.name === 'NoSuchBucket') {
+        CloudRunnerLogger.log(`S3 bucket ${bucketName} does not exist yet (CloudFormation may still be creating it)`);
+        CloudRunnerLogger.log(`Waiting 10 seconds and retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+
+        // Retry once
+        try {
+          await AwsClientFactory.getS3().send(
+            new PutObjectCommand({
+              Bucket: bucketName,
+              Key: key,
+              Body: commands,
+              ContentType: 'text/plain',
+            }),
+          );
+          const s3Url = `s3://${bucketName}/${key}`;
+          CloudRunnerLogger.log(`Uploaded command script to ${s3Url}`);
+          return s3Url;
+        } catch (retryError) {
+          CloudRunnerLogger.log(`Failed to upload command to S3 after retry: ${retryError}`);
+          throw retryError;
+        }
+      }
+
       CloudRunnerLogger.log(`Failed to upload command to S3: ${error}`);
       throw error;
     }
@@ -84,7 +111,7 @@ class AWSTaskRunner {
 
     if (overridesSize > 8192) {
       CloudRunnerLogger.log('Command too large, uploading to S3...');
-      const s3Url = await this.uploadCommandToS3(fullCommand, taskDef.taskDefStackName);
+      const s3Url = await this.uploadCommandToS3(fullCommand, taskDef.taskDefStackName, taskDef.baseStackName || CloudRunner.buildParameters.awsStackName);
 
       // Install AWS CLI and download script (AWS CLI not pre-installed in Unity containers)
       // Use Python pip method which is more reliable in Unity containers

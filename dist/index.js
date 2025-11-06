@@ -2012,6 +2012,7 @@ class AWSJobStack {
         const baseOutputs = baseStackDescription.Stacks?.[0]?.Outputs;
         return {
             taskDefStackName,
+            baseStackName: this.baseStackName,
             taskDefCloudFormation,
             taskDefResources,
             baseResources,
@@ -2070,10 +2071,12 @@ const cloud_runner_options_1 = __importDefault(__nccwpck_require__(66965));
 const github_1 = __importDefault(__nccwpck_require__(83654));
 const aws_client_factory_1 = __nccwpck_require__(30161);
 class AWSTaskRunner {
-    static async uploadCommandToS3(commands, stackName) {
-        const bucketName = cloud_runner_1.default.buildParameters.awsStackName.toLowerCase();
+    static async uploadCommandToS3(commands, stackName, baseStackName) {
+        // Use base stack name as bucket name (created by CloudFormation)
+        const bucketName = baseStackName.toLowerCase();
         const key = `commands/${stackName}-${Date.now()}.sh`;
         try {
+            // Try to upload to S3
             await aws_client_factory_1.AwsClientFactory.getS3().send(new client_s3_1.PutObjectCommand({
                 Bucket: bucketName,
                 Key: key,
@@ -2085,6 +2088,28 @@ class AWSTaskRunner {
             return s3Url;
         }
         catch (error) {
+            // If bucket doesn't exist, it means CloudFormation hasn't created it yet
+            if (error.name === 'NoSuchBucket') {
+                cloud_runner_logger_1.default.log(`S3 bucket ${bucketName} does not exist yet (CloudFormation may still be creating it)`);
+                cloud_runner_logger_1.default.log(`Waiting 10 seconds and retrying...`);
+                await new Promise(resolve => setTimeout(resolve, 10000));
+                // Retry once
+                try {
+                    await aws_client_factory_1.AwsClientFactory.getS3().send(new client_s3_1.PutObjectCommand({
+                        Bucket: bucketName,
+                        Key: key,
+                        Body: commands,
+                        ContentType: 'text/plain',
+                    }));
+                    const s3Url = `s3://${bucketName}/${key}`;
+                    cloud_runner_logger_1.default.log(`Uploaded command script to ${s3Url}`);
+                    return s3Url;
+                }
+                catch (retryError) {
+                    cloud_runner_logger_1.default.log(`Failed to upload command to S3 after retry: ${retryError}`);
+                    throw retryError;
+                }
+            }
             cloud_runner_logger_1.default.log(`Failed to upload command to S3: ${error}`);
             throw error;
         }
@@ -2119,7 +2144,7 @@ class AWSTaskRunner {
         cloud_runner_logger_1.default.log(`Container overrides size: ${overridesSize} / 8192`);
         if (overridesSize > 8192) {
             cloud_runner_logger_1.default.log('Command too large, uploading to S3...');
-            const s3Url = await this.uploadCommandToS3(fullCommand, taskDef.taskDefStackName);
+            const s3Url = await this.uploadCommandToS3(fullCommand, taskDef.taskDefStackName, taskDef.baseStackName || cloud_runner_1.default.buildParameters.awsStackName);
             // Install AWS CLI and download script (AWS CLI not pre-installed in Unity containers)
             // Use Python pip method which is more reliable in Unity containers
             finalCommand = `
