@@ -2003,11 +2003,15 @@ class AWSJobStack {
         }))).StackResources;
         const baseResources = (await CF.send(new client_cloudformation_1.DescribeStackResourcesCommand({ StackName: this.baseStackName })))
             .StackResources;
+        // Also fetch base stack outputs (needed for shared VPC configuration)
+        const baseStackDescription = await CF.send(new client_cloudformation_1.DescribeStacksCommand({ StackName: this.baseStackName }));
+        const baseOutputs = baseStackDescription.Stacks?.[0]?.Outputs;
         return {
             taskDefStackName,
             taskDefCloudFormation,
             taskDefResources,
             baseResources,
+            baseOutputs,
         };
     }
 }
@@ -2050,6 +2054,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 const client_ecs_1 = __nccwpck_require__(18209);
 const client_kinesis_1 = __nccwpck_require__(25474);
+const client_s3_1 = __nccwpck_require__(19250);
 const core = __importStar(__nccwpck_require__(42186));
 const zlib = __importStar(__nccwpck_require__(65628));
 const cloud_runner_logger_1 = __importDefault(__nccwpck_require__(42864));
@@ -2061,13 +2066,73 @@ const cloud_runner_options_1 = __importDefault(__nccwpck_require__(66965));
 const github_1 = __importDefault(__nccwpck_require__(83654));
 const aws_client_factory_1 = __nccwpck_require__(30161);
 class AWSTaskRunner {
+    static async uploadCommandToS3(commands, stackName) {
+        const bucketName = cloud_runner_1.default.buildParameters.awsStackName.toLowerCase();
+        const key = `commands/${stackName}-${Date.now()}.sh`;
+        try {
+            await aws_client_factory_1.AwsClientFactory.getS3().send(new client_s3_1.PutObjectCommand({
+                Bucket: bucketName,
+                Key: key,
+                Body: commands,
+                ContentType: 'text/plain',
+            }));
+            const s3Url = `s3://${bucketName}/${key}`;
+            cloud_runner_logger_1.default.log(`Uploaded command script to ${s3Url}`);
+            return s3Url;
+        }
+        catch (error) {
+            cloud_runner_logger_1.default.log(`Failed to upload command to S3: ${error}`);
+            throw error;
+        }
+    }
     static async runTask(taskDef, environment, commands) {
         const cluster = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'ECSCluster')?.PhysicalResourceId || '';
         const taskDefinition = taskDef.taskDefResources?.find((x) => x.LogicalResourceId === 'TaskDefinition')?.PhysicalResourceId || '';
-        const SubnetOne = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetOne')?.PhysicalResourceId || '';
-        const SubnetTwo = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetTwo')?.PhysicalResourceId || '';
-        const ContainerSecurityGroup = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'ContainerSecurityGroup')?.PhysicalResourceId || '';
+        // Try to get subnets from resources first, then fall back to outputs (for shared VPC)
+        const SubnetOne = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetOne')?.PhysicalResourceId ||
+            taskDef.baseOutputs?.find((x) => x.OutputKey === 'PublicSubnetOne')?.OutputValue ||
+            '';
+        const SubnetTwo = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetTwo')?.PhysicalResourceId ||
+            taskDef.baseOutputs?.find((x) => x.OutputKey === 'PublicSubnetTwo')?.OutputValue ||
+            '';
+        const ContainerSecurityGroup = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'ContainerSecurityGroup')?.PhysicalResourceId ||
+            taskDef.baseOutputs?.find((x) => x.OutputKey === 'ContainerSecurityGroup')?.OutputValue ||
+            '';
         const streamName = taskDef.taskDefResources?.find((x) => x.LogicalResourceId === 'KinesisStream')?.PhysicalResourceId || '';
+        const fullCommand = command_hook_service_1.CommandHookService.ApplyHooksToCommands(commands, cloud_runner_1.default.buildParameters);
+        // Check if command would exceed AWS limit
+        let finalCommand = fullCommand;
+        const testOverrides = {
+            containerOverrides: [
+                {
+                    name: taskDef.taskDefStackName,
+                    environment,
+                    command: ['-c', fullCommand],
+                },
+            ],
+        };
+        const overridesSize = JSON.stringify(testOverrides).length;
+        cloud_runner_logger_1.default.log(`Container overrides size: ${overridesSize} / 8192`);
+        if (overridesSize > 8192) {
+            cloud_runner_logger_1.default.log('Command too large, uploading to S3...');
+            const s3Url = await this.uploadCommandToS3(fullCommand, taskDef.taskDefStackName);
+            // Install AWS CLI and download script (AWS CLI not pre-installed in Unity containers)
+            finalCommand = `
+        echo "Installing AWS CLI..."
+        apt-get update -qq && apt-get install -y -qq awscli > /dev/null 2>&1 || echo "AWS CLI install failed, trying alternative..."
+        if ! command -v aws &> /dev/null; then
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+          apt-get install -y -qq unzip > /dev/null 2>&1
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install > /dev/null 2>&1
+        fi
+        echo "Downloading command script from S3..."
+        aws s3 cp ${s3Url} /tmp/command.sh
+        chmod +x /tmp/command.sh
+        echo "Executing command script..."
+        /bin/sh /tmp/command.sh
+      `;
+        }
         const runParameters = {
             cluster,
             taskDefinition,
@@ -2077,7 +2142,7 @@ class AWSTaskRunner {
                     {
                         name: taskDef.taskDefStackName,
                         environment,
-                        command: ['-c', command_hook_service_1.CommandHookService.ApplyHooksToCommands(commands, cloud_runner_1.default.buildParameters)],
+                        command: ['-c', finalCommand],
                     },
                 ],
             },
@@ -2090,10 +2155,12 @@ class AWSTaskRunner {
                 },
             },
         };
-        if (JSON.stringify(runParameters.overrides.containerOverrides).length > 8192) {
+        const finalOverridesSize = JSON.stringify(runParameters.overrides.containerOverrides).length;
+        if (finalOverridesSize > 8192) {
             cloud_runner_logger_1.default.log(JSON.stringify(runParameters.overrides.containerOverrides, undefined, 4));
-            throw new Error(`Container Overrides length must be at most 8192`);
+            throw new Error(`Container Overrides length must be at most 8192 (actual: ${finalOverridesSize})`);
         }
+        cloud_runner_logger_1.default.log(`Final container overrides size: ${finalOverridesSize} / 8192`);
         const task = await aws_client_factory_1.AwsClientFactory.getECS().send(new client_ecs_1.RunTaskCommand(runParameters));
         const taskArn = task.tasks?.[0].taskArn || '';
         cloud_runner_logger_1.default.log('Cloud runner job is starting');
@@ -6029,6 +6096,10 @@ class RemoteClientLogger {
     static get LogFilePath() {
         // Use a cross-platform temporary directory for local development
         if (process.platform === 'win32') {
+            return node_path_1.default.join(process.cwd(), 'temp', 'job-log.txt');
+        }
+        // In test or local environments, use a temp directory instead of /home
+        if (process.env.NODE_ENV === 'test' || !cloud_runner_1.default.isCloudRunnerEnvironment) {
             return node_path_1.default.join(process.cwd(), 'temp', 'job-log.txt');
         }
         return node_path_1.default.join(`/home`, `job-log.txt`);

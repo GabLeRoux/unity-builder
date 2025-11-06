@@ -11,6 +11,11 @@ export class RemoteClientLogger {
       return path.join(process.cwd(), 'temp', 'job-log.txt');
     }
 
+    // In test or local environments, use a temp directory instead of /home
+    if (process.env.NODE_ENV === 'test' || !CloudRunner.isCloudRunnerEnvironment) {
+      return path.join(process.cwd(), 'temp', 'job-log.txt');
+    }
+
     return path.join(`/home`, `job-log.txt`);
   }
 

@@ -36,9 +36,7 @@ export class AWSBaseStack {
     const baseStackName = this.baseStackName;
 
     // Use shared VPC formation if config is provided
-    const baseStack = this.sharedVpcConfig
-      ? SharedVpcBaseStackFormation.formation
-      : BaseStackFormation.formation;
+    const baseStack = this.sharedVpcConfig ? SharedVpcBaseStackFormation.formation : BaseStackFormation.formation;
 
     // Cloud Formation Input
     const describeStackInput: DescribeStacksCommandInput = {
@@ -52,7 +50,7 @@ export class AWSBaseStack {
         { ParameterKey: 'SharedVpcId', ParameterValue: this.sharedVpcConfig.vpcId },
         { ParameterKey: 'SharedSubnetOne', ParameterValue: this.sharedVpcConfig.subnetOne },
         { ParameterKey: 'SharedSubnetTwo', ParameterValue: this.sharedVpcConfig.subnetTwo },
-        { ParameterKey: 'SharedSecurityGroup', ParameterValue: this.sharedVpcConfig.securityGroup }
+        { ParameterKey: 'SharedSecurityGroup', ParameterValue: this.sharedVpcConfig.securityGroup },
       );
       CloudRunnerLogger.log(`Using shared VPC: ${this.sharedVpcConfig.vpcId}`);
     }

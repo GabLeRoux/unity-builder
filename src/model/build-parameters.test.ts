@@ -203,6 +203,11 @@ describe('BuildParameters', () => {
 
     it('throws error when no unity license provider provided', async () => {
       delete process.env.UNITY_LICENSE; // Need to delete this as it is set for every test currently
+      delete process.env.UNITY_SERIAL;
+      jest.spyOn(Input, 'skipActivation', 'get').mockReturnValue('false');
+      jest.spyOn(Input, 'unityLicensingServer', 'get').mockReturnValue('');
+      jest.spyOn(Input, 'unitySerial', 'get').mockReturnValue('');
+      jest.spyOn(Input, 'unityLicense', 'get').mockReturnValue('');
       await expect(BuildParameters.create()).rejects.toThrowError();
     });
 

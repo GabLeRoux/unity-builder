@@ -217,11 +217,16 @@ export class AWSJobStack {
     const baseResources = (await CF.send(new DescribeStackResourcesCommand({ StackName: this.baseStackName })))
       .StackResources;
 
+    // Also fetch base stack outputs (needed for shared VPC configuration)
+    const baseStackDescription = await CF.send(new DescribeStacksCommand({ StackName: this.baseStackName }));
+    const baseOutputs = baseStackDescription.Stacks?.[0]?.Outputs;
+
     return {
       taskDefStackName,
       taskDefCloudFormation,
       taskDefResources,
       baseResources,
+      baseOutputs,
     };
   }
 }

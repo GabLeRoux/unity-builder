@@ -1,5 +1,6 @@
 import { DescribeTasksCommand, RunTaskCommand, waitUntilTasksRunning } from '@aws-sdk/client-ecs';
 import { DescribeStreamCommand, GetRecordsCommand, GetShardIteratorCommand } from '@aws-sdk/client-kinesis';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import CloudRunnerEnvironmentVariable from '../../options/cloud-runner-environment-variable';
 import * as core from '@actions/core';
 import CloudRunnerAWSTaskDef from './cloud-runner-aws-task-def';
@@ -15,6 +16,30 @@ import { AwsClientFactory } from './aws-client-factory';
 
 class AWSTaskRunner {
   private static readonly encodedUnderscore = `$252F`;
+
+  private static async uploadCommandToS3(commands: string, stackName: string): Promise<string> {
+    const bucketName = CloudRunner.buildParameters.awsStackName.toLowerCase();
+    const key = `commands/${stackName}-${Date.now()}.sh`;
+
+    try {
+      await AwsClientFactory.getS3().send(
+        new PutObjectCommand({
+          Bucket: bucketName,
+          Key: key,
+          Body: commands,
+          ContentType: 'text/plain',
+        }),
+      );
+
+      const s3Url = `s3://${bucketName}/${key}`;
+      CloudRunnerLogger.log(`Uploaded command script to ${s3Url}`);
+      return s3Url;
+    } catch (error) {
+      CloudRunnerLogger.log(`Failed to upload command to S3: ${error}`);
+      throw error;
+    }
+  }
+
   static async runTask(
     taskDef: CloudRunnerAWSTaskDef,
     environment: CloudRunnerEnvironmentVariable[],
@@ -23,14 +48,61 @@ class AWSTaskRunner {
     const cluster = taskDef.baseResources?.find((x) => x.LogicalResourceId === 'ECSCluster')?.PhysicalResourceId || '';
     const taskDefinition =
       taskDef.taskDefResources?.find((x) => x.LogicalResourceId === 'TaskDefinition')?.PhysicalResourceId || '';
+
+    // Try to get subnets from resources first, then fall back to outputs (for shared VPC)
     const SubnetOne =
-      taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetOne')?.PhysicalResourceId || '';
+      taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetOne')?.PhysicalResourceId ||
+      taskDef.baseOutputs?.find((x) => x.OutputKey === 'PublicSubnetOne')?.OutputValue ||
+      '';
     const SubnetTwo =
-      taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetTwo')?.PhysicalResourceId || '';
+      taskDef.baseResources?.find((x) => x.LogicalResourceId === 'PublicSubnetTwo')?.PhysicalResourceId ||
+      taskDef.baseOutputs?.find((x) => x.OutputKey === 'PublicSubnetTwo')?.OutputValue ||
+      '';
     const ContainerSecurityGroup =
-      taskDef.baseResources?.find((x) => x.LogicalResourceId === 'ContainerSecurityGroup')?.PhysicalResourceId || '';
+      taskDef.baseResources?.find((x) => x.LogicalResourceId === 'ContainerSecurityGroup')?.PhysicalResourceId ||
+      taskDef.baseOutputs?.find((x) => x.OutputKey === 'ContainerSecurityGroup')?.OutputValue ||
+      '';
     const streamName =
       taskDef.taskDefResources?.find((x) => x.LogicalResourceId === 'KinesisStream')?.PhysicalResourceId || '';
+
+    const fullCommand = CommandHookService.ApplyHooksToCommands(commands, CloudRunner.buildParameters);
+
+    // Check if command would exceed AWS limit
+    let finalCommand = fullCommand;
+    const testOverrides = {
+      containerOverrides: [
+        {
+          name: taskDef.taskDefStackName,
+          environment,
+          command: ['-c', fullCommand],
+        },
+      ],
+    };
+
+    const overridesSize = JSON.stringify(testOverrides).length;
+    CloudRunnerLogger.log(`Container overrides size: ${overridesSize} / 8192`);
+
+    if (overridesSize > 8192) {
+      CloudRunnerLogger.log('Command too large, uploading to S3...');
+      const s3Url = await this.uploadCommandToS3(fullCommand, taskDef.taskDefStackName);
+
+      // Install AWS CLI and download script (AWS CLI not pre-installed in Unity containers)
+      finalCommand = `
+        echo "Installing AWS CLI..."
+        apt-get update -qq && apt-get install -y -qq awscli > /dev/null 2>&1 || echo "AWS CLI install failed, trying alternative..."
+        if ! command -v aws &> /dev/null; then
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+          apt-get install -y -qq unzip > /dev/null 2>&1
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install > /dev/null 2>&1
+        fi
+        echo "Downloading command script from S3..."
+        aws s3 cp ${s3Url} /tmp/command.sh
+        chmod +x /tmp/command.sh
+        echo "Executing command script..."
+        /bin/sh /tmp/command.sh
+      `;
+    }
 
     const runParameters = {
       cluster,
@@ -41,7 +113,7 @@ class AWSTaskRunner {
           {
             name: taskDef.taskDefStackName,
             environment,
-            command: ['-c', CommandHookService.ApplyHooksToCommands(commands, CloudRunner.buildParameters)],
+            command: ['-c', finalCommand],
           },
         ],
       },
@@ -55,10 +127,13 @@ class AWSTaskRunner {
       },
     };
 
-    if (JSON.stringify(runParameters.overrides.containerOverrides).length > 8192) {
+    const finalOverridesSize = JSON.stringify(runParameters.overrides.containerOverrides).length;
+    if (finalOverridesSize > 8192) {
       CloudRunnerLogger.log(JSON.stringify(runParameters.overrides.containerOverrides, undefined, 4));
-      throw new Error(`Container Overrides length must be at most 8192`);
+      throw new Error(`Container Overrides length must be at most 8192 (actual: ${finalOverridesSize})`);
     }
+
+    CloudRunnerLogger.log(`Final container overrides size: ${finalOverridesSize} / 8192`);
 
     const task = await AwsClientFactory.getECS().send(new RunTaskCommand(runParameters as any));
     const taskArn = task.tasks?.[0].taskArn || '';
