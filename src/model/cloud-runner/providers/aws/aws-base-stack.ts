@@ -101,7 +101,9 @@ export class AWSBaseStack {
         await waitUntilStackCreateComplete(
           {
             client: CF,
-            maxWaitTime: 200,
+            maxWaitTime: 900, // 15 minutes - CloudFormation stacks with VPC/ECS/EFS can take 5-10 minutes
+            minDelay: 5,
+            maxDelay: 30,
           },
           describeStackInput,
         );
@@ -135,7 +137,9 @@ export class AWSBaseStack {
           await waitUntilStackUpdateComplete(
             {
               client: CF,
-              maxWaitTime: 200,
+              maxWaitTime: 900, // 15 minutes - Stack updates can also take time
+              minDelay: 5,
+              maxDelay: 30,
             },
             describeStackInput,
           );

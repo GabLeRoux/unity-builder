@@ -95,15 +95,24 @@ class AWSTaskRunner {
         # Try apt-get first (fastest if available)
         if apt-get update -qq 2>/dev/null && apt-get install -y -qq awscli 2>/dev/null; then
           echo "[Cloud-Runner] AWS CLI installed via apt-get"
+          # Refresh PATH to pick up newly installed aws command
+          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+          hash -r
         # Try pip if Python is available
         elif command -v pip3 &> /dev/null; then
           echo "[Cloud-Runner] Installing AWS CLI via pip3..."
           pip3 install --quiet awscli
           echo "[Cloud-Runner] AWS CLI installed via pip3"
+          # Add pip install location to PATH
+          export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+          hash -r
         elif command -v pip &> /dev/null; then
           echo "[Cloud-Runner] Installing AWS CLI via pip..."
           pip install --quiet awscli
           echo "[Cloud-Runner] AWS CLI installed via pip"
+          # Add pip install location to PATH
+          export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
+          hash -r
         # Last resort: download and install manually
         else
           echo "[Cloud-Runner] Installing AWS CLI manually..."
@@ -112,16 +121,33 @@ class AWSTaskRunner {
           unzip -q /tmp/awscliv2.zip -d /tmp
           /tmp/aws/install
           echo "[Cloud-Runner] AWS CLI installed manually"
+          export PATH="/usr/local/bin:$PATH"
+          hash -r
         fi
 
-        # Verify AWS CLI is available
-        if ! command -v aws &> /dev/null; then
-          echo "[Cloud-Runner] ERROR: AWS CLI installation failed"
+        # Verify AWS CLI is available (check multiple possible locations)
+        AWS_CMD=""
+        if command -v aws &> /dev/null; then
+          AWS_CMD="aws"
+        elif [ -f /usr/local/bin/aws ]; then
+          AWS_CMD="/usr/local/bin/aws"
+        elif [ -f /usr/bin/aws ]; then
+          AWS_CMD="/usr/bin/aws"
+        elif [ -f $HOME/.local/bin/aws ]; then
+          AWS_CMD="$HOME/.local/bin/aws"
+        else
+          echo "[Cloud-Runner] ERROR: AWS CLI installation failed - command not found"
+          echo "[Cloud-Runner] PATH: $PATH"
+          echo "[Cloud-Runner] Checking common locations:"
+          ls -la /usr/local/bin/aws 2>&1 || echo "  /usr/local/bin/aws not found"
+          ls -la /usr/bin/aws 2>&1 || echo "  /usr/bin/aws not found"
           exit 1
         fi
 
+        echo "[Cloud-Runner] AWS CLI found at: $AWS_CMD"
+        echo "[Cloud-Runner] AWS CLI version: $($AWS_CMD --version)"
         echo "[Cloud-Runner] Downloading command script from S3..."
-        aws s3 cp ${s3Url} /tmp/command.sh
+        $AWS_CMD s3 cp ${s3Url} /tmp/command.sh
         chmod +x /tmp/command.sh
         echo "[Cloud-Runner] Executing command script..."
         /bin/sh /tmp/command.sh
