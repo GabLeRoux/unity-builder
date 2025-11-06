@@ -15,8 +15,10 @@ export class AwsClientFactory {
 
   static getCloudFormation(): CloudFormation {
     if (!this.cloudFormation) {
+      // Force region to be a string, not a function
+      const regionString = typeof Input.region === 'string' ? Input.region : String(Input.region);
       this.cloudFormation = new CloudFormation({
-        region: Input.region,
+        region: regionString,
         endpoint: CloudRunnerOptions.awsCloudFormationEndpoint,
       });
     }
@@ -26,8 +28,10 @@ export class AwsClientFactory {
 
   static getECS(): ECS {
     if (!this.ecs) {
+      // Force region to be a string, not a function
+      const regionString = typeof Input.region === 'string' ? Input.region : String(Input.region);
       this.ecs = new ECS({
-        region: Input.region,
+        region: regionString,
         endpoint: CloudRunnerOptions.awsEcsEndpoint,
       });
     }
@@ -37,8 +41,10 @@ export class AwsClientFactory {
 
   static getKinesis(): Kinesis {
     if (!this.kinesis) {
+      // Force region to be a string, not a function
+      const regionString = typeof Input.region === 'string' ? Input.region : String(Input.region);
       this.kinesis = new Kinesis({
-        region: Input.region,
+        region: regionString,
         endpoint: CloudRunnerOptions.awsKinesisEndpoint,
       });
     }
@@ -48,8 +54,10 @@ export class AwsClientFactory {
 
   static getCloudWatchLogs(): CloudWatchLogs {
     if (!this.cloudWatchLogs) {
+      // Force region to be a string, not a function
+      const regionString = typeof Input.region === 'string' ? Input.region : String(Input.region);
       this.cloudWatchLogs = new CloudWatchLogs({
-        region: Input.region,
+        region: regionString,
         endpoint: CloudRunnerOptions.awsCloudWatchLogsEndpoint,
       });
     }
@@ -59,8 +67,10 @@ export class AwsClientFactory {
 
   static getS3(): S3 {
     if (!this.s3) {
+      // Force region to be a string, not a function
+      const regionString = typeof Input.region === 'string' ? Input.region : String(Input.region);
       this.s3 = new S3({
-        region: Input.region,
+        region: regionString,
         endpoint: CloudRunnerOptions.awsS3Endpoint,
         forcePathStyle: true,
       });

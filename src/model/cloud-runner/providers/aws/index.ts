@@ -77,7 +77,25 @@ class AWSBuildEnvironment implements ProviderInterface {
   ) {
     process.env.AWS_REGION = Input.region;
     const CF = AwsClientFactory.getCloudFormation();
-    await new AwsBaseStack(this.baseStackName).setupBaseStack(CF);
+
+    // Check for shared VPC configuration from environment variables
+    const sharedVpcId = process.env.SHARED_VPC_ID || '';
+    const sharedSubnetOne = process.env.SHARED_SUBNET_ONE || '';
+    const sharedSubnetTwo = process.env.SHARED_SUBNET_TWO || '';
+    const sharedSecurityGroup = process.env.SHARED_SECURITY_GROUP || '';
+
+    let sharedVpcConfig = undefined;
+    if (sharedVpcId && sharedSubnetOne && sharedSubnetTwo && sharedSecurityGroup) {
+      sharedVpcConfig = {
+        vpcId: sharedVpcId,
+        subnetOne: sharedSubnetOne,
+        subnetTwo: sharedSubnetTwo,
+        securityGroup: sharedSecurityGroup,
+      };
+      CloudRunnerLogger.log(`Shared VPC configuration detected - will reuse VPC ${sharedVpcId}`);
+    }
+
+    await new AwsBaseStack(this.baseStackName, sharedVpcConfig).setupBaseStack(CF);
   }
 
   async runTaskInWorkflow(

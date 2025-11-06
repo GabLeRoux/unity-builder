@@ -14,24 +14,49 @@ import {
   waitUntilStackUpdateComplete,
 } from '@aws-sdk/client-cloudformation';
 import { BaseStackFormation } from './cloud-formations/base-stack-formation';
+import { SharedVpcBaseStackFormation } from './cloud-formations/shared-vpc-base-stack-formation';
 import crypto from 'node:crypto';
 
+export interface SharedVpcConfig {
+  vpcId: string;
+  subnetOne: string;
+  subnetTwo: string;
+  securityGroup: string;
+}
+
 export class AWSBaseStack {
-  constructor(baseStackName: string) {
+  constructor(baseStackName: string, sharedVpcConfig?: SharedVpcConfig) {
     this.baseStackName = baseStackName;
+    this.sharedVpcConfig = sharedVpcConfig;
   }
   private baseStackName: string;
+  private sharedVpcConfig?: SharedVpcConfig;
 
   async setupBaseStack(CF: CloudFormation) {
     const baseStackName = this.baseStackName;
 
-    const baseStack = BaseStackFormation.formation;
+    // Use shared VPC formation if config is provided
+    const baseStack = this.sharedVpcConfig
+      ? SharedVpcBaseStackFormation.formation
+      : BaseStackFormation.formation;
 
     // Cloud Formation Input
     const describeStackInput: DescribeStacksCommandInput = {
       StackName: baseStackName,
     };
     const parametersWithoutHash: Parameter[] = [{ ParameterKey: 'EnvironmentName', ParameterValue: baseStackName }];
+
+    // Add shared VPC parameters if provided
+    if (this.sharedVpcConfig) {
+      parametersWithoutHash.push(
+        { ParameterKey: 'SharedVpcId', ParameterValue: this.sharedVpcConfig.vpcId },
+        { ParameterKey: 'SharedSubnetOne', ParameterValue: this.sharedVpcConfig.subnetOne },
+        { ParameterKey: 'SharedSubnetTwo', ParameterValue: this.sharedVpcConfig.subnetTwo },
+        { ParameterKey: 'SharedSecurityGroup', ParameterValue: this.sharedVpcConfig.securityGroup }
+      );
+      CloudRunnerLogger.log(`Using shared VPC: ${this.sharedVpcConfig.vpcId}`);
+    }
+
     const parametersHash = crypto
       .createHash('md5')
       .update(baseStack + JSON.stringify(parametersWithoutHash))
