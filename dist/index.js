@@ -2117,19 +2117,43 @@ class AWSTaskRunner {
             cloud_runner_logger_1.default.log('Command too large, uploading to S3...');
             const s3Url = await this.uploadCommandToS3(fullCommand, taskDef.taskDefStackName);
             // Install AWS CLI and download script (AWS CLI not pre-installed in Unity containers)
+            // Use Python pip method which is more reliable in Unity containers
             finalCommand = `
-        echo "Installing AWS CLI..."
-        apt-get update -qq && apt-get install -y -qq awscli > /dev/null 2>&1 || echo "AWS CLI install failed, trying alternative..."
-        if ! command -v aws &> /dev/null; then
-          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
-          apt-get install -y -qq unzip > /dev/null 2>&1
+        set -e
+        echo "[Cloud-Runner] Installing AWS CLI..."
+
+        # Try apt-get first (fastest if available)
+        if apt-get update -qq 2>/dev/null && apt-get install -y -qq awscli 2>/dev/null; then
+          echo "[Cloud-Runner] AWS CLI installed via apt-get"
+        # Try pip if Python is available
+        elif command -v pip3 &> /dev/null; then
+          echo "[Cloud-Runner] Installing AWS CLI via pip3..."
+          pip3 install --quiet awscli
+          echo "[Cloud-Runner] AWS CLI installed via pip3"
+        elif command -v pip &> /dev/null; then
+          echo "[Cloud-Runner] Installing AWS CLI via pip..."
+          pip install --quiet awscli
+          echo "[Cloud-Runner] AWS CLI installed via pip"
+        # Last resort: download and install manually
+        else
+          echo "[Cloud-Runner] Installing AWS CLI manually..."
+          apt-get update -qq && apt-get install -y -qq curl unzip 2>/dev/null || true
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
           unzip -q /tmp/awscliv2.zip -d /tmp
-          /tmp/aws/install > /dev/null 2>&1
+          /tmp/aws/install
+          echo "[Cloud-Runner] AWS CLI installed manually"
         fi
-        echo "Downloading command script from S3..."
+
+        # Verify AWS CLI is available
+        if ! command -v aws &> /dev/null; then
+          echo "[Cloud-Runner] ERROR: AWS CLI installation failed"
+          exit 1
+        fi
+
+        echo "[Cloud-Runner] Downloading command script from S3..."
         aws s3 cp ${s3Url} /tmp/command.sh
         chmod +x /tmp/command.sh
-        echo "Executing command script..."
+        echo "[Cloud-Runner] Executing command script..."
         /bin/sh /tmp/command.sh
       `;
         }
